@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -70,6 +72,7 @@ func main() {
 			log.Fatal().Err(err).Send()
 		}
 	}
+
 	// Middleware
 	e.Use(
 		middleware.CORS(),
@@ -92,12 +95,59 @@ func main() {
 		url := c.Param("url")
 		// check file is exist in s3
 
-		// File path is s3-bucket/domainname/filename
+		tags, err := minioClient.GetObjectTagging(ctx, bucketName, url, minio.GetObjectTaggingOptions{})
+		if err != nil {
+			log.Error().Err(err).Send()
+		}
 
-		// check if it's expired or not
+		if _, ok := tags.ToMap()["expireAfter"]; !ok {
+			log.Error().Msg("Object don't have a valid tag")
+			return c.String(http.StatusBadRequest, "Object don't have a valid tag")
+		}
+		expireAfterStr := tags.ToMap()["expireAfter"]
+		expireAfter, err := strconv.Atoi(expireAfterStr)
+		if err != nil {
+			log.Error().Err(err).Msg("Object don't have a valid expireAfter")
+			return c.String(http.StatusBadRequest, "Object don't have a valid expireAfter")
 
-		// pull the artifact serve and store to s3 same time
+		}
 
+		tLeftExpire := time.Since(time.Unix(int64(expireAfter), 0))
+		// Which means expired
+		if tLeftExpire > 0 {
+			// Pull the artifact
+			resp, err := http.Get(url)
+			if err != nil {
+				log.Error().Err(err).Msg("Object don't have a valid expireAfter")
+				return c.String(http.StatusBadRequest, "Object don't have a valid expireAfter")
+			}
+
+			etag := tags.ToMap()["etag"]
+			// Artifact is changed so pull it again
+			if etag != resp.Header.Get("ETag") {
+				// ! We can also duplicate the resp.Body to achieve store to s3 and serve to http request at the same time
+				// Store the artifact
+				_, err := minioClient.PutObject(ctx, bucketName, url, resp.Body, resp.ContentLength, minio.PutObjectOptions{
+					UserTags: map[string]string{
+						"etag":        resp.Header.Get("ETag"),
+						"expireAfter": strconv.Itoa(int(time.Now().Add(time.Hour).Unix())),
+					},
+				})
+				if err != nil {
+					log.Error().Err(err).Msg("Object don't have a valid expireAfter")
+					return c.String(http.StatusBadRequest, "Object don't have a valid expireAfter")
+				}
+			}
+			// Object is same so serve the object
+		}
+
+		obj, err := minioClient.GetObject(ctx, bucketName, url, minio.GetObjectOptions{})
+		if err != nil {
+			log.Fatal().Err(err).Send()
+		}
+
+		io.Copy(c.Response().Writer,obj)
+		return nil
 	})
 	// Start server
 	go func() {
