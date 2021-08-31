@@ -93,17 +93,8 @@ func main() {
 	})
 
 	e.POST("/internal/:filename", func(c echo.Context) error {
-		file, err := c.FormFile("file")
-		if err != nil {
-			return err
-		}
-		src, err := file.Open()
-		if err != nil {
-			return err
-		}
-		defer src.Close()
 
-		_, err = minioClient.PutObject(ctx, bucketName, "internal/"+c.Param("filename"), src, file.Size, minio.PutObjectOptions{})
+		_, err = minioClient.PutObject(ctx, bucketName, "internal/"+c.Param("filename"), c.Request().Body, c.Request().ContentLength, minio.PutObjectOptions{})
 		if err != nil {
 			log.Error().Err(err).Msg("Put err")
 			return c.String(http.StatusBadRequest, "Put err")
@@ -119,7 +110,14 @@ func main() {
 			return c.String(http.StatusInternalServerError, "ERR")
 		}
 
-		http.ServeContent(c.Response().Writer, c.Request(), c.Param("filename"), time.Now(), obj)
+		c.Response().WriteHeader(http.StatusOK)
+		c.Response().Header().Set("Content-Type", "application/octet-stream")
+		by, err := io.ReadAll(obj)
+		if err != nil {
+			log.Error().Err(err).Msg("Copy error")
+			return c.String(http.StatusBadRequest, "Copy error")
+		}
+		c.Response().Write(by)
 		return nil
 	})
 
@@ -216,11 +214,15 @@ func main() {
 			log.Fatal().Err(err).Send()
 		}
 
-		_, err = io.Copy(c.Response().Writer, obj)
+		c.Response().WriteHeader(http.StatusOK)
+		c.Response().Header().Set("Content-Type", "application/octet-stream")
+		by, err := io.ReadAll(obj)
 		if err != nil {
 			log.Error().Err(err).Msg("Copy error")
 			return c.String(http.StatusBadRequest, "Copy error")
 		}
+		c.Response().Write(by)
+
 		return nil
 	})
 	// Start server
