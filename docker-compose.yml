@@ -1,0 +1,22 @@
+version: "3"
+services:
+  s3:
+    image: "minio/minio:RELEASE.2021-08-31T05-46-54Z"
+    hostname: "storage"
+    restart: "no"
+    volumes:
+      - data:/data
+    environment:
+      - MINIO_ROOT_USER=s3accesskey
+      - MINIO_ROOT_PASSWORD=s3secretkey
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    entrypoint: ["minio", "server", "/data","--console-address",":9001"]
+    networks:
+      - local
+volumes:
+  data:
+
+networks:
+  local:
