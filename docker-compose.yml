@@ -15,6 +15,24 @@ services:
     entrypoint: ["minio", "server", "/data","--console-address",":9001"]
     networks:
       - local
+  backend:
+    image: backend
+    build:
+      context: backend
+    ports:
+      - 8089:8089
+    env_file:
+      - ./backend/.env.docker
+    healthcheck:
+      test: [ "CMD", "curl", "-f" ,"http://localhost:8089/ready" ]
+      interval: 5s
+      timeout: 30s
+      retries: 50
+    restart: always
+    networks:
+      - local
+    depends_on:
+      - s3
 volumes:
   data:
 
