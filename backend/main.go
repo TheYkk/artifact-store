@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
+	netUrl "net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -90,14 +92,61 @@ func main() {
 		return c.String(http.StatusOK, Version)
 	})
 
+	e.POST("/internal/:filename", func(c echo.Context) error {
+		return nil
+	})
+	e.GET("/internal/:filename", func(c echo.Context) error {
+		// Get file from bucketName/internal/filename
+		obj, err := minioClient.GetObject(ctx, bucketName, "internal/"+c.Param("filename"), minio.GetObjectOptions{})
+		if err != nil {
+			log.Fatal().Err(err).Send()
+		}
+
+		io.Copy(c.Response().Writer, obj)
+		return nil
+	})
+
 	e.GET("/3rdparty/:url", func(c echo.Context) error {
 		// get the artifact url from request url
 		url := c.Param("url")
 		// check file is exist in s3
 
-		tags, err := minioClient.GetObjectTagging(ctx, bucketName, url, minio.GetObjectTaggingOptions{})
+		tags, err := minioClient.GetObjectTagging(ctx, bucketName, "3rdparty/"+url, minio.GetObjectTaggingOptions{})
 		if err != nil {
-			log.Error().Err(err).Send()
+			errResponse := minio.ToErrorResponse(err)
+			if errResponse.Code == "NoSuchKey" {
+				// Download file
+
+				// ! I am not satisfied with these , because we add https to every url
+				// ! what will happen when the artifact is only served with http?
+
+				pUrl, _ := netUrl.Parse(url)
+				pUrl.Scheme = "https"
+
+				resp, err := http.Get(pUrl.String())
+				if err != nil {
+					log.Error().Err(err).Msg("Object don't have a valid expireAfter")
+					return c.String(http.StatusBadRequest, "Object don't have a valid expireAfter")
+				}
+
+				// ! We are duplicate the resp.Body to achieve store to s3 and serve to http request at the same time
+				var buf bytes.Buffer
+				tee := io.TeeReader(resp.Body, &buf)
+				io.Copy(c.Response().Writer, tee)
+
+				// Store the artifact
+				_, err = minioClient.PutObject(ctx, bucketName, "3rdparty/"+url, &buf, resp.ContentLength, minio.PutObjectOptions{
+					UserTags: map[string]string{
+						"etag":        resp.Header.Get("ETag"),
+						"expireAfter": strconv.Itoa(int(time.Now().Add(time.Hour).Unix())),
+					},
+				})
+				if err != nil {
+					log.Error().Err(err).Msg("Object don't have a valid expireAfter")
+					return c.String(http.StatusBadRequest, "Object don't have a valid expireAfter")
+				}
+			}
+			return nil
 		}
 
 		if _, ok := tags.ToMap()["expireAfter"]; !ok {
@@ -127,7 +176,7 @@ func main() {
 			if etag != resp.Header.Get("ETag") {
 				// ! We can also duplicate the resp.Body to achieve store to s3 and serve to http request at the same time
 				// Store the artifact
-				_, err := minioClient.PutObject(ctx, bucketName, url, resp.Body, resp.ContentLength, minio.PutObjectOptions{
+				_, err := minioClient.PutObject(ctx, bucketName, "3rdparty/"+url, resp.Body, resp.ContentLength, minio.PutObjectOptions{
 					UserTags: map[string]string{
 						"etag":        resp.Header.Get("ETag"),
 						"expireAfter": strconv.Itoa(int(time.Now().Add(time.Hour).Unix())),
@@ -141,12 +190,12 @@ func main() {
 			// Object is same so serve the object
 		}
 
-		obj, err := minioClient.GetObject(ctx, bucketName, url, minio.GetObjectOptions{})
+		obj, err := minioClient.GetObject(ctx, bucketName, "3rdparty/"+url, minio.GetObjectOptions{})
 		if err != nil {
 			log.Fatal().Err(err).Send()
 		}
 
-		io.Copy(c.Response().Writer,obj)
+		io.Copy(c.Response().Writer, obj)
 		return nil
 	})
 	// Start server
