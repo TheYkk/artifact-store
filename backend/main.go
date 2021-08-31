@@ -93,16 +93,33 @@ func main() {
 	})
 
 	e.POST("/internal/:filename", func(c echo.Context) error {
-		return nil
+		file, err := c.FormFile("file")
+		if err != nil {
+			return err
+		}
+		src, err := file.Open()
+		if err != nil {
+			return err
+		}
+		defer src.Close()
+
+		_, err = minioClient.PutObject(ctx, bucketName, "internal/"+c.Param("filename"), src, file.Size, minio.PutObjectOptions{})
+		if err != nil {
+			log.Error().Err(err).Msg("Put err")
+			return c.String(http.StatusBadRequest, "Put err")
+		}
+		return c.String(http.StatusOK, "Uploaded successfully")
+
 	})
 	e.GET("/internal/:filename", func(c echo.Context) error {
 		// Get file from bucketName/internal/filename
 		obj, err := minioClient.GetObject(ctx, bucketName, "internal/"+c.Param("filename"), minio.GetObjectOptions{})
 		if err != nil {
 			log.Fatal().Err(err).Send()
+			return c.String(http.StatusInternalServerError, "ERR")
 		}
 
-		io.Copy(c.Response().Writer, obj)
+		http.ServeContent(c.Response().Writer, c.Request(), c.Param("filename"), time.Now(), obj)
 		return nil
 	})
 
@@ -125,14 +142,18 @@ func main() {
 
 				resp, err := http.Get(pUrl.String())
 				if err != nil {
-					log.Error().Err(err).Msg("Object don't have a valid expireAfter")
-					return c.String(http.StatusBadRequest, "Object don't have a valid expireAfter")
+					log.Error().Err(err).Msg("Http get error")
+					return c.String(http.StatusBadRequest, "Http get error")
 				}
 
 				// ! We are duplicate the resp.Body to achieve store to s3 and serve to http request at the same time
 				var buf bytes.Buffer
 				tee := io.TeeReader(resp.Body, &buf)
-				io.Copy(c.Response().Writer, tee)
+				_, err = io.Copy(c.Response().Writer, tee)
+				if err != nil {
+					log.Error().Err(err).Msg("Copy error")
+					return c.String(http.StatusBadRequest, "Copy error")
+				}
 
 				// Store the artifact
 				_, err = minioClient.PutObject(ctx, bucketName, "3rdparty/"+url, &buf, resp.ContentLength, minio.PutObjectOptions{
@@ -142,8 +163,8 @@ func main() {
 					},
 				})
 				if err != nil {
-					log.Error().Err(err).Msg("Object don't have a valid expireAfter")
-					return c.String(http.StatusBadRequest, "Object don't have a valid expireAfter")
+					log.Error().Err(err).Msg("Object put error")
+					return c.String(http.StatusBadRequest, "Object put error")
 				}
 			}
 			return nil
@@ -167,8 +188,8 @@ func main() {
 			// Pull the artifact
 			resp, err := http.Get(url)
 			if err != nil {
-				log.Error().Err(err).Msg("Object don't have a valid expireAfter")
-				return c.String(http.StatusBadRequest, "Object don't have a valid expireAfter")
+				log.Error().Err(err).Msg("Http get error")
+				return c.String(http.StatusBadRequest, "Http get error")
 			}
 
 			etag := tags.ToMap()["etag"]
@@ -183,8 +204,8 @@ func main() {
 					},
 				})
 				if err != nil {
-					log.Error().Err(err).Msg("Object don't have a valid expireAfter")
-					return c.String(http.StatusBadRequest, "Object don't have a valid expireAfter")
+					log.Error().Err(err).Msg("Object put error")
+					return c.String(http.StatusBadRequest, "Object put error")
 				}
 			}
 			// Object is same so serve the object
@@ -195,7 +216,11 @@ func main() {
 			log.Fatal().Err(err).Send()
 		}
 
-		io.Copy(c.Response().Writer, obj)
+		_, err = io.Copy(c.Response().Writer, obj)
+		if err != nil {
+			log.Error().Err(err).Msg("Copy error")
+			return c.String(http.StatusBadRequest, "Copy error")
+		}
 		return nil
 	})
 	// Start server
